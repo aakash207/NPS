@@ -250,7 +250,15 @@ def compute_daily_nps(date_str: str, time_str: str = "12:00",
         L = lon_sid[p]
         sign = get_sign(L)
         cap = p.capitalize()
-        sthana = sthana_bala_dict.get(cap, [0]*12)[sign_names.index(sign)]
+        
+        # Apply Parivartana Sthana swap if active
+        if cap in parivardhana_map:
+            exchange_lord = parivardhana_map[cap]
+            exchange_sign = planet_sign_map[exchange_lord]
+            sthana = sthana_bala_dict.get(cap, [0]*12)[sign_names.index(exchange_sign)]
+        else:
+            sthana = sthana_bala_dict.get(cap, [0]*12)[sign_names.index(sign)]
+            
         # NOTE: Kendra/Kona sthana boost SKIPPED for daily NPS
         capacity = capacity_dict.get(cap, None)
         volume = (capacity * sthana / 100.0) if capacity is not None else 0.0
@@ -1459,6 +1467,9 @@ def compute_daily_nps(date_str: str, time_str: str = "12:00",
         if clone.get('is_xsun'):
             continue
         parent = clone['parent']
+        # Rahu and Ketu do not cast aspects in KHS
+        if parent in ('Rahu', 'Ketu'):
+            continue
         target_lon = (phase5_data[parent]['L'] + (clone['offset'] - 1) * 30) % 360
         target_sign = get_sign(target_lon)
         if _hp_is_malefic(parent):
@@ -1613,6 +1624,7 @@ def compute_daily_nps(date_str: str, time_str: str = "12:00",
         'paksha': paksha,
         'tithi_name': moon_phase_name,
         'jupiter_poison_case': _jp_poison_case_final,
+        'parivardhana_map': parivardhana_map,
         'planets': out_planets,
         'phases': {
             'phase0': {p: {'inventory': {k: round(v, 2) for k, v in s['inventory'].items() if abs(v) > 0.001},
@@ -1788,11 +1800,19 @@ def _run_streamlit_app():
     # ── 1. Headline NPS / Predictions / Strength ────────────────────
     st.subheader("NPS · Predictions · Strength")
     rows = []
+    _parivardhana = result.get('parivardhana_map', {})
     for p in PLANET_ORDER:
         d = result['planets'][p]
+        p_exchange = "-"
+        if p in _parivardhana:
+            partner = _parivardhana[p]
+            partner_sign = result['planets'][partner]['sign']
+            p_exchange = f"Yes, with {partner} [{partner_sign}]"
+        
         rows.append({
             'Planet':         p,
             'Sign':           d['sign'],
+            'Parivartana':    p_exchange,
             'Long°':          d['longitude'],
             'Status':         d['status'] if d['updated_status'] == '-' else
                               f"{d['status']} → {d['updated_status']}",
@@ -1803,9 +1823,21 @@ def _run_streamlit_app():
             'KHS':            d['khs'],
             'NPS':            d['final_nps'],
             'Predictions %':  d['pred_norm'],
-            'Case':           d['formula_case'],
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── 1.5 Simplified Final Table ───────────────────────────────────
+    st.subheader("Final Strength & Wellness")
+    final_rows = []
+    for p in PLANET_ORDER:
+        d = result['planets'][p]
+        capped_nps = min(100.0, d['final_nps'])
+        final_rows.append({
+            'Planet': p,
+            'Total Strength': capped_nps,
+            'Wellness Score': d['pred_norm'],
+        })
+    st.dataframe(pd.DataFrame(final_rows), use_container_width=True, hide_index=True)
 
     # ── 2. House table (Lagna-driven) ───────────────────────────────
     st.subheader("House Table")
