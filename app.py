@@ -54,62 +54,98 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 
-# ── Bootstrap: load logic.py constants & helpers WITHOUT executing Streamlit UI
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _THIS_DIR not in sys.path:
-    sys.path.insert(0, _THIS_DIR)
+# Swisseph is required
+try:
+    import swisseph as swe
+    USE_SWISSEPH = True
+except ImportError:
+    swe = None
+    USE_SWISSEPH = False
 
+# ──────────────────────────────────────────────────────────────────────
+# Constants & Helpers (Extracted from logic.py to make daily_nps standalone)
+# ──────────────────────────────────────────────────────────────────────
 
-def _load_logic_namespace():
-    """Read logic.py, slice off everything from the Streamlit UI marker
-    onward, and exec only the computation portion. Returns the module-like
-    namespace dict."""
-    logic_py_path = os.path.join(_THIS_DIR, "logic.py")
-    with open(logic_py_path, "r", encoding="utf-8") as fh:
-        src = fh.read()
-    ui_marker = "\nst.set_page_config("
-    cut = src.find(ui_marker)
-    if cut == -1:
-        raise RuntimeError("Could not find Streamlit UI section in logic.py")
-    ns = {"__file__": logic_py_path, "__name__": "logic_compute_only"}
-    exec(compile(src[:cut], logic_py_path, "exec"), ns)
-    return ns
+sign_names = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo','Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces']
+sign_lords = ['Mars','Venus','Mercury','Moon','Sun','Mercury','Venus','Mars','Jupiter','Saturn','Saturn','Jupiter']
 
+sthana_bala_dict = {
+    'Sun':     [100, 90, 80, 70, 80, 50, 40, 50, 60, 70, 80, 90],
+    'Moon':    [ 70,100, 70, 80, 70, 60, 50, 40, 50, 60, 60, 70],
+    'Jupiter': [ 60, 60, 60,100, 80, 60, 60, 60, 80, 40, 50, 70],
+    'Venus':   [ 60, 70, 60, 50, 40, 30, 80, 50, 60, 70, 60,100],
+    'Mercury': [ 40, 60, 80, 50, 70,100, 70, 50, 50, 60, 50, 30],
+    'Mars':    [ 80, 70, 60, 40, 60, 60, 60, 60, 70,100, 70, 60],
+    'Saturn':  [ 40, 50, 60, 70, 80, 60,100, 90, 60, 80, 90, 50],
+    'Rahu':    [100]*12,
+    'Ketu':    [100]*12
+}
 
-_L = _load_logic_namespace()
+status_data = {
+    'Sun': {'Uchcham': 'Aries', 'Moolathirigonam': None, 'Aatchi': 'Leo', 'Neecham': 'Libra'},
+    'Moon': {'Uchcham': 'Taurus', 'Moolathirigonam': None, 'Aatchi': 'Cancer', 'Neecham': 'Scorpio'},
+    'Jupiter': {'Uchcham': 'Cancer', 'Moolathirigonam': 'Sagittarius', 'Aatchi': 'Pisces', 'Neecham': 'Capricorn'},
+    'Venus': {'Uchcham': 'Pisces', 'Moolathirigonam': 'Libra', 'Aatchi': 'Taurus', 'Neecham': 'Virgo'},
+    'Mercury': {'Uchcham': 'Virgo', 'Moolathirigonam': None, 'Aatchi': 'Gemini', 'Neecham': 'Pisces'},
+    'Mars': {'Uchcham': 'Capricorn', 'Moolathirigonam': 'Aries', 'Aatchi': 'Scorpio', 'Neecham': 'Cancer'},
+    'Saturn': {'Uchcham': 'Libra', 'Moolathirigonam': 'Aquarius', 'Aatchi': 'Capricorn', 'Neecham': 'Aries'}
+}
 
-# Constants pulled from logic.py
-sign_names                  = _L["sign_names"]
-sign_lords                  = _L["sign_lords"]
-sthana_bala_dict            = _L["sthana_bala_dict"]
-status_data                 = _L["status_data"]
-capacity_dict               = _L["capacity_dict"]
-good_capacity_dict          = _L["good_capacity_dict"]
-bad_capacity_dict           = _L["bad_capacity_dict"]
-shukla_good                 = _L["shukla_good"]
-shukla_bad                  = _L["shukla_bad"]
-krishna_good                = _L["krishna_good"]
-krishna_bad                 = _L["krishna_bad"]
-shukla_tithi_names          = _L["shukla_tithi_names"]
-krishna_tithi_names         = _L["krishna_tithi_names"]
-single_currency_planets     = _L["single_currency_planets"]
-bad_currency_planets        = _L["bad_currency_planets"]
-malefic_planets             = _L["malefic_planets"]
-navamsa_malefic_hierarchy   = _L["navamsa_malefic_hierarchy"]
-mix_dict                    = _L["mix_dict"]
-planet_ruled_signs          = _L["planet_ruled_signs"]
+capacity_dict = {
+    'Saturn': 100, 'Mars': 100, 'Sun': 100, 'Jupiter': 100, 
+    'Venus': 50, 'Mercury': 30, 'Moon': 100, 'Rahu': 100, 'Ketu': 50
+}
+good_capacity_dict = {
+    'Saturn': 0, 'Mars': 25, 'Sun': 50, 'Jupiter': 100, 
+    'Venus': 100, 'Mercury': 100, 'Rahu': 0, 'Ketu': 0
+}
+bad_capacity_dict = {
+    'Saturn': 100, 'Mars': 75, 'Sun': 50, 'Jupiter': 0, 
+    'Venus': 0, 'Mercury': 0, 'Rahu': 100, 'Ketu': 100
+}
 
-# Helper functions pulled from logic.py
-get_sign                    = _L["get_sign"]
-get_sign_lord               = _L["get_sign_lord"]
-is_good_currency            = _L["is_good_currency"]
-is_sun_or_moon_currency     = _L["is_sun_or_moon_currency"]
-compute_positions_swisseph  = _L["compute_positions_swisseph"]
+shukla_good = [100, 9, 16, 23, 30, 37, 44, 51, 58, 65, 72, 79, 86, 93, 100]
+shukla_bad = [0] * 15
+krishna_good = [93, 86, 79, 72, 65, 58, 51, 44, 37, 30, 23, 16, 9, 2, 0]
+krishna_bad = [7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 100]
 
-# Swisseph itself (logic.py imports as `swe` if available)
-swe                         = _L.get("swe", None)
-USE_SWISSEPH                = _L.get("USE_SWISSEPH", False)
+shukla_tithi_names = ['Shukla Pratipada', 'Shukla Dwitiya', 'Shukla Tritiya', 'Shukla Chaturthi', 'Shukla Panchami', 'Shukla Shashti', 'Shukla Saptami', 'Shukla Ashtami', 'Shukla Navami', 'Shukla Dashami', 'Shukla Ekadashi', 'Shukla Dwadashi', 'Shukla Trayodashi', 'Shukla Chaturdashi', 'Purnima']
+krishna_tithi_names = ['Krishna Pratipada', 'Krishna Dwitiya', 'Krishna Tritiya', 'Krishna Chaturthi', 'Krishna Panchami', 'Krishna Shashti', 'Krishna Saptami', 'Krishna Ashtami', 'Krishna Navami', 'Krishna Dashami', 'Krishna Ekadashi', 'Krishna Dwadashi', 'Krishna Trayodashi', 'Krishna Chaturdashi', 'Amavasya']
 
+single_currency_planets = ['Venus', 'Jupiter', 'Mercury', 'Rahu', 'Ketu', 'Saturn']
+bad_currency_planets = ['Saturn', 'Rahu', 'Ketu']
+malefic_planets = ['Saturn', 'Rahu', 'Ketu', 'Mars', 'Sun']
+
+navamsa_malefic_hierarchy = {'Rahu': 1, 'Sun': 2, 'Saturn': 3, 'Mars': 4, 'Ketu': 5}
+
+mix_dict = {0:100,1:100,2:100,3:95,4:90,5:85,6:80,7:75,8:70,9:65,10:60,11:55,12:50,13:45,14:40,15:35,16:30,17:25,18:20,19:15,20:10,21:5,22:0}
+
+planet_ruled_signs = {
+    'Sun': ['Leo'],
+    'Moon': ['Cancer'],
+    'Mars': ['Aries', 'Scorpio'],
+    'Mercury': ['Gemini', 'Virgo'],
+    'Jupiter': ['Sagittarius', 'Pisces'],
+    'Venus': ['Taurus', 'Libra'],
+    'Saturn': ['Capricorn', 'Aquarius']
+}
+
+def get_sign(L):
+    return sign_names[int(L / 30)]
+
+def get_sign_lord(sign_name):
+    try:
+        idx = sign_names.index(sign_name)
+        return sign_lords[idx]
+    except ValueError:
+        return None
+
+def is_good_currency(k):
+    if k == 'Jupiter Poison': return False
+    return 'Good ' in k or k in ['Jupiter', 'Venus', 'Mercury']
+
+def is_sun_or_moon_currency(k):
+    return ('Sun' in k) or ('Moon' in k)
 
 PLANET_ORDER = ['Sun', 'Moon', 'Mars', 'Mercury', 'Jupiter', 'Venus',
                 'Saturn', 'Rahu', 'Ketu']
