@@ -1745,7 +1745,10 @@ def _run_streamlit_app():
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        date_val = st.date_input("Date", value=datetime.now().date())
+        date_val = st.date_input("Date", value=datetime.now().date(),
+                                 min_value=datetime(1, 1, 1).date(),
+                                 max_value=datetime(2200, 12, 31).date(),
+                                 format="DD/MM/YYYY")
     with col2:
         time_val = st.time_input("Time", value=datetime.now().replace(hour=12, minute=0).time())
     with col3:
