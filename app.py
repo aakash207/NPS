@@ -1876,70 +1876,154 @@ def _run_streamlit_app():
     # ── Export Chart Data ────────────────────────────────────────────
     st.subheader("Export Chart Data")
     st.caption(
-        "Downloads a JSON snapshot of the current planetary state for the "
-        "selected lagna, merged with transit predictions from the lookup table."
+        "Downloads a text snapshot for the selected first-house (Lagna) sign, "
+        "containing planetary positions, house details, and transit data "
+        "(predictions excluded)."
     )
 
-    transit_db  = _load_transitdata()
-    lagna_key   = f"{lagna_sign} Lagna"
+    transit_db     = _load_transitdata()
+    lagna_key      = f"{lagna_sign} Lagna"
     lagna_transits = transit_db.get(lagna_key, {})
 
-    export = {
-        'as_of_utc':    result['as_of_utc'],
-        'as_of_local':  result['as_of_local'],
-        'tithi':        result['tithi_name'],
-        'paksha':       result['paksha'],
-        'lagna':        lagna_sign,
-        'parivardhana': result.get('parivardhana_map', {}),
-        'planets':      {},
+    lagna_idx     = sign_names.index(lagna_sign)
+    house_sign    = {n: sign_names[(lagna_idx + n - 1) % 12] for n in range(1, 13)}
+    sign_house    = {s: n for n, s in house_sign.items()}
+
+    # Aspect-percentage rules (mirrors logic.py _PROMPT_ASPECT_RULES)
+    _ASPECT_PCT_RULES = {
+        'Saturn': {3: 25, 7: 100, 10: 75},
+        'Mars':   {4: 40, 7: 100, 8: 25},
+        'Sun':    {7: 50},
+        'Jupiter':{5: 100, 7: 100, 9: 100},
+        'Venus':  {7: 100},
+        'Mercury':{7: 100},
+        'Moon':   {4: 25, 6: 50, 7: 100, 8: 50, 10: 25},
+        'Rahu':   {5: 100, 7: 100, 9: 100},
+        'Ketu':   {5: 100, 7: 100, 9: 100},
     }
 
+    _parivardhana_simple = result.get('parivardhana_map', {}) or {}
+
+    # ── 1. Planetary positions ───────────────────────────────
+    pp_lines = ["=== PLANETARY POSITIONS ==="]
+    asc_deg = lagna_idx * 30.0
+    pp_lines.append(f"Asc: Deg: {asc_deg:.2f} | Sign: {lagna_sign}")
     for p in PLANET_ORDER:
         d = result['planets'][p]
-        planet_sign = d['sign']
-        planet_transit_entry = lagna_transits.get(p, {}).get(planet_sign, {})
+        parts = [
+            f"Deg: {d.get('longitude', 0):.2f}",
+            f"Sign: {d.get('sign', '')}",
+        ]
+        upd_status = d.get('updated_status', '-')
+        status     = d.get('status', '-')
+        if upd_status and str(upd_status) not in ('-', 'nan', '', 'None'):
+            parts.append(f"Status: {upd_status}")
+        elif status and str(status) not in ('-', 'nan', '', 'None'):
+            parts.append(f"Status: {status}")
+        # Parivardhana: build "Partner (Hx-Hy)" from the simple partner-name map
+        if p in _parivardhana_simple:
+            partner = _parivardhana_simple[p]
+            h_self = sign_house.get(d.get('sign', ''), '?')
+            partner_sign = result['planets'].get(partner, {}).get('sign', '')
+            h_partner = sign_house.get(partner_sign, '?')
+            parts.append(f"Parivardhana: {partner} (H{h_self}-H{h_partner})")
+        # NPS / Strength — always for the seven, only NPS for shadow planets
+        pred_val = d.get('pred_norm')
+        if pred_val is not None:
+            parts.append(f"NPS (Predictions): {pred_val:.2f}")
+        if p not in ('Rahu', 'Ketu'):
+            strength = min(100.0, d.get('final_nps', 0.0))
+            parts.append(f"Strength: {strength:.2f}")
+        pp_lines.append(f"{p}: {' | '.join(parts)}")
 
-        planet_export = {
-            'sign':           planet_sign,
-            'longitude':      d.get('longitude'),
-            'status':         d.get('updated_status') if d.get('updated_status', '-') != '-'
-                              else d.get('status', ''),
-            'sthana_pct':     d.get('sthana'),
-            'volume':         d.get('volume'),
-            'good_total':     d.get('good_total'),
-            'bad_total':      d.get('bad_total'),
-            'net_score':      d.get('net_score'),
-            'debt':           d.get('debt'),
-            'khs':            d.get('khs'),
-            'nps':            d.get('final_nps'),
-            'total_strength': min(100.0, d.get('final_nps', 0.0)),
-            'wellness_score': d.get('pred_norm'),
-            'inventory':      d.get('inventory', {}),
-        }
+    # ── 2. House details ─────────────────────────────────────
+    planets_in_house = {n: [] for n in range(1, 13)}
+    for p in PLANET_ORDER:
+        s = result['planets'][p].get('sign', '')
+        if s in sign_house:
+            planets_in_house[sign_house[s]].append(p)
 
-        if planet_transit_entry:
-            planet_export['transit_prediction'] = {
-                'in_house':       planet_transit_entry.get('in_house'),
-                'lord_of_houses': planet_transit_entry.get('lord_of_houses', []),
-                'transit_status': planet_transit_entry.get('status', ''),
-                'prediction':     planet_transit_entry.get('prediction', ''),
-                'verdict':        planet_transit_entry.get('verdict', ''),
-            }
+    aspects_in_house = {n: [] for n in range(1, 13)}
+    for p in PLANET_ORDER:
+        s = result['planets'][p].get('sign', '')
+        if s not in sign_house:
+            continue
+        from_house = sign_house[s]
+        for off in _ASPECT_HOUSES.get(p, [7]):
+            target = ((from_house - 1 + off - 1) % 12) + 1
+            aspects_in_house[target].append(p)
+
+    hd_lines = ["=== HOUSE DETAILS ==="]
+    for n in range(1, 13):
+        sg = house_sign[n]
+        occupants = planets_in_house[n]
+        if n == 1:
+            contains_str = "Contains Asc" + ((" + " + ", ".join(occupants)) if occupants else "")
         else:
-            planet_export['transit_prediction'] = {}
+            contains_str = ("Contains " + ", ".join(occupants)) if occupants else "Empty"
 
-        export['planets'][p] = planet_export
+        asps = aspects_in_house[n]
+        if asps:
+            asp_with_pct = []
+            for ap in asps:
+                ap_sign  = result['planets'][ap].get('sign', '')
+                ap_house = sign_house.get(ap_sign, 0)
+                if ap_house:
+                    offset = ((n - ap_house) % 12) + 1
+                    pct = _ASPECT_PCT_RULES.get(ap, {}).get(offset)
+                    asp_with_pct.append(f"{ap}({pct}%)" if pct is not None else ap)
+                else:
+                    asp_with_pct.append(ap)
+            aspects_str = ("Aspects from " if len(asp_with_pct) > 1 else "Aspect from ") + ", ".join(asp_with_pct)
+        else:
+            aspects_str = "No Aspects"
 
-    export_json = json.dumps(export, indent=2, default=str)
-    date_slug   = (result['as_of_utc'] or '')[:10]
+        lord = get_sign_lord(sg)
+        lord_sign  = result['planets'].get(lord, {}).get('sign', '')
+        lord_house = sign_house.get(lord_sign, '-')
+        lord_str   = (f"Lord: {lord} (placed in House {lord_house})"
+                      if isinstance(lord_house, int)
+                      else f"Lord: {lord}")
+
+        hd_lines.append(f"House {n} ({sg}): {contains_str} | {aspects_str} | {lord_str}")
+
+    # ── 3. Transit data (predictions excluded) ───────────────
+    td_lines = ["=== TRANSIT DATA ==="]
+    for p in PLANET_ORDER:
+        d        = result['planets'][p]
+        p_sign   = d.get('sign', '')
+        entry    = lagna_transits.get(p, {}).get(p_sign, {})
+        if not entry:
+            td_lines.append(f"{p} ({p_sign}): (no transit entry)")
+            continue
+        t_parts = [
+            f"rasi: {entry.get('rasi', '')}",
+            f"placement_sign: {entry.get('placement_sign', p_sign)}",
+            f"lord_of_houses: {entry.get('lord_of_houses', [])}",
+            f"in_house: {entry.get('in_house', '')}",
+            f"status: {entry.get('status', '')}",
+            f"verdict: {entry.get('verdict', '')}",
+        ]
+        td_lines.append(f"{p} ({p_sign}): " + " | ".join(t_parts))
+
+    export_text = (
+        "\n".join(pp_lines)
+        + "\n\n"
+        + "\n\n".join(hd_lines)
+        + "\n\n"
+        + "\n".join(td_lines)
+        + "\n"
+    )
+
+    date_slug = (result.get('as_of_utc') or '')[:10]
     st.download_button(
-        label     = "⬇ Download Chart JSON",
-        data      = export_json,
-        file_name = f"chart_{lagna_sign}_{date_slug}.json",
-        mime      = "application/json",
+        label     = "⬇ Download Chart Data (.txt)",
+        data      = export_text,
+        file_name = f"chart_{lagna_sign}_{date_slug}.txt",
+        mime      = "text/plain",
     )
     with st.expander("Preview Export Data"):
-        st.json(export)
+        st.text(export_text)
 
     # ── 3. Phase-by-phase currency exchange ─────────────────────────
     st.subheader("Currency Exchange across Phases")
