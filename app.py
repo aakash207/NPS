@@ -46,6 +46,7 @@ Headless:
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 from collections import defaultdict
@@ -1676,6 +1677,22 @@ _ASPECT_HOUSES = {
 }
 
 
+_TRANSITDATA_CACHE: "dict | None" = None
+
+
+def _load_transitdata() -> dict:
+    """Load transitdata.json once per process and cache in a module-level dict."""
+    global _TRANSITDATA_CACHE
+    if _TRANSITDATA_CACHE is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'transitdata.json')
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                _TRANSITDATA_CACHE = json.load(f)
+        except Exception:
+            _TRANSITDATA_CACHE = {}
+    return _TRANSITDATA_CACHE
+
+
 def _build_house_table(result: dict, lagna_sign: str) -> pd.DataFrame:
     """Build the 12-house table given a chosen Lagna sign."""
     lagna_idx = sign_names.index(lagna_sign)
@@ -1855,6 +1872,74 @@ def _run_streamlit_app():
     )
     st.dataframe(_build_house_table(result, lagna_sign),
                  use_container_width=True, hide_index=True)
+
+    # ── Export Chart Data ────────────────────────────────────────────
+    st.subheader("Export Chart Data")
+    st.caption(
+        "Downloads a JSON snapshot of the current planetary state for the "
+        "selected lagna, merged with transit predictions from the lookup table."
+    )
+
+    transit_db  = _load_transitdata()
+    lagna_key   = f"{lagna_sign} Lagna"
+    lagna_transits = transit_db.get(lagna_key, {})
+
+    export = {
+        'as_of_utc':    result['as_of_utc'],
+        'as_of_local':  result['as_of_local'],
+        'tithi':        result['tithi_name'],
+        'paksha':       result['paksha'],
+        'lagna':        lagna_sign,
+        'parivardhana': result.get('parivardhana_map', {}),
+        'planets':      {},
+    }
+
+    for p in PLANET_ORDER:
+        d = result['planets'][p]
+        planet_sign = d['sign']
+        planet_transit_entry = lagna_transits.get(p, {}).get(planet_sign, {})
+
+        planet_export = {
+            'sign':           planet_sign,
+            'longitude':      d.get('longitude'),
+            'status':         d.get('updated_status') if d.get('updated_status', '-') != '-'
+                              else d.get('status', ''),
+            'sthana_pct':     d.get('sthana'),
+            'volume':         d.get('volume'),
+            'good_total':     d.get('good_total'),
+            'bad_total':      d.get('bad_total'),
+            'net_score':      d.get('net_score'),
+            'debt':           d.get('debt'),
+            'khs':            d.get('khs'),
+            'nps':            d.get('final_nps'),
+            'total_strength': min(100.0, d.get('final_nps', 0.0)),
+            'wellness_score': d.get('pred_norm'),
+            'inventory':      d.get('inventory', {}),
+        }
+
+        if planet_transit_entry:
+            planet_export['transit_prediction'] = {
+                'in_house':       planet_transit_entry.get('in_house'),
+                'lord_of_houses': planet_transit_entry.get('lord_of_houses', []),
+                'transit_status': planet_transit_entry.get('status', ''),
+                'prediction':     planet_transit_entry.get('prediction', ''),
+                'verdict':        planet_transit_entry.get('verdict', ''),
+            }
+        else:
+            planet_export['transit_prediction'] = {}
+
+        export['planets'][p] = planet_export
+
+    export_json = json.dumps(export, indent=2, default=str)
+    date_slug   = (result['as_of_utc'] or '')[:10]
+    st.download_button(
+        label     = "⬇ Download Chart JSON",
+        data      = export_json,
+        file_name = f"chart_{lagna_sign}_{date_slug}.json",
+        mime      = "application/json",
+    )
+    with st.expander("Preview Export Data"):
+        st.json(export)
 
     # ── 3. Phase-by-phase currency exchange ─────────────────────────
     st.subheader("Currency Exchange across Phases")
